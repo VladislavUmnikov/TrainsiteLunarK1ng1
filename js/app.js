@@ -26,6 +26,32 @@ const TRIPS = [
 ];
 
 /**
+ * Расписание остановок: дата MSK, город, прибытие, стоянка (мин), отправление.
+ * null = нет данных (начальная/конечная станция).
+ */
+const SCHEDULES = {
+  'pasha-diana': [
+    { month: 7, day: 7, city: 'Белгород',                   arrival: null,           stop: null, departure: { h: 22, m: 5  } },
+    { month: 7, day: 7, city: 'Прохоровка',                 arrival: { h: 22, m: 55 }, stop: 2,  departure: { h: 22, m: 57 } },
+    { month: 7, day: 7, city: 'Ржава',                      arrival: { h: 23, m: 16 }, stop: 2,  departure: { h: 23, m: 18 } },
+    { month: 7, day: 7, city: 'Солнцево',                   arrival: { h: 23, m: 39 }, stop: 2,  departure: { h: 23, m: 41 } },
+    { month: 7, day: 8, city: 'Курск',                      arrival: { h: 0,  m: 25 }, stop: 17, departure: { h: 0,  m: 42 } },
+    { month: 7, day: 8, city: 'Орёл',                       arrival: { h: 2,  m: 23 }, stop: 4,  departure: { h: 2,  m: 27 } },
+    { month: 7, day: 8, city: 'Тула (Московский вокзал)',   arrival: { h: 4,  m: 33 }, stop: 4,  departure: { h: 4,  m: 37 } },
+    { month: 7, day: 8, city: 'Москва (Восточный вокзал)',  arrival: { h: 8,  m: 3  }, stop: null, departure: null },
+  ],
+  vlad: [
+    { month: 7, day: 8, city: 'Санкт-Петербург (Ладожский вокзал)', arrival: { h: 1, m: 52 }, stop: 12, departure: { h: 2, m: 4  } },
+    { month: 7, day: 8, city: 'Чудово-московское',                  arrival: { h: 4, m: 6  }, stop: 1,  departure: { h: 4, m: 7  } },
+    { month: 7, day: 8, city: 'Малая Вишера',                       arrival: { h: 4, m: 32 }, stop: 1,  departure: { h: 4, m: 33 } },
+    { month: 7, day: 8, city: 'Бологое-Московское',                 arrival: { h: 6, m: 5  }, stop: 18, departure: { h: 6, m: 23 } },
+    { month: 7, day: 8, city: 'Тверь',                              arrival: { h: 7, m: 54 }, stop: 1,  departure: { h: 7, m: 55 } },
+    { month: 7, day: 8, city: 'Завидово*',                          arrival: { h: 8, m: 28 }, stop: 18, departure: { h: 8, m: 46 } },
+    { month: 7, day: 8, city: 'Москва (Ленинградский вокзал)',     arrival: { h: 10, m: 16 }, stop: null, departure: null },
+  ],
+};
+
+/**
  * Создаёт объект Date из компонентов московского времени.
  * Использует ISO-строку с явным смещением +03:00 (MSK).
  */
@@ -80,6 +106,83 @@ function getProgressPercent(now, departure, arrival) {
   return Math.min(100, Math.max(0, (elapsed / total) * 100));
 }
 
+/** Преобразует время станции в Date (MSK, 2026) */
+function stationTime(station, type) {
+  const t = type === 'arrival' ? station.arrival : station.departure;
+  if (!t) return null;
+  return createMSKDate(2026, station.month, station.day, t.h, t.m, 0);
+}
+
+/** Форматирует HH:MM или «—» */
+function fmtTime(obj) {
+  if (!obj) return '—';
+  return `${String(obj.h).padStart(2, '0')}:${String(obj.m).padStart(2, '0')}`;
+}
+
+/** Форматирует стоянку */
+function fmtStop(minutes) {
+  if (minutes == null) return '—';
+  const n = minutes % 10;
+  const n100 = minutes % 100;
+  let word = 'минут';
+  if (n100 < 11 || n100 > 14) {
+    if (n === 1) word = 'мин';
+    else if (n >= 2 && n <= 4) word = 'мин';
+  }
+  return `${minutes} ${word}`;
+}
+
+/** Дата для подписи: «7 июля» */
+function fmtDateLabel(station) {
+  const months = [
+    '', 'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+    'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+  ];
+  return `${station.day} ${months[station.month]}`;
+}
+
+/**
+ * Определяет статус каждой станции относительно now (MSK).
+ */
+function getScheduleStates(schedule, now) {
+  const states = schedule.map(() => 'future');
+  const last = schedule[schedule.length - 1];
+  const lastArr = stationTime(last, 'arrival');
+
+  if (lastArr && now >= lastArr) {
+    return schedule.map((_, i) => (i === schedule.length - 1 ? 'done' : 'past'));
+  }
+
+  for (let i = 0; i < schedule.length; i++) {
+    const st = schedule[i];
+    const arr = stationTime(st, 'arrival');
+    const dep = stationTime(st, 'departure');
+
+    if (i === 0 && dep && !arr && now < dep) {
+      states[i] = 'current';
+      return states;
+    }
+
+    if (arr && dep && now >= arr && now < dep) {
+      for (let j = 0; j < i; j++) states[j] = 'past';
+      states[i] = 'current';
+      return states;
+    }
+  }
+
+  for (let i = 1; i < schedule.length; i++) {
+    const prevDep = stationTime(schedule[i - 1], 'departure');
+    const nextArr = stationTime(schedule[i], 'arrival');
+    if (prevDep && nextArr && now >= prevDep && now < nextArr) {
+      for (let j = 0; j < i; j++) states[j] = 'past';
+      states[i] = 'current';
+      return states;
+    }
+  }
+
+  return states;
+}
+
 /** SVG-иконка поезда */
 function trainSVG() {
   return `
@@ -98,8 +201,48 @@ function trainSVG() {
   `;
 }
 
+/** HTML расписания для карточки */
+function renderSchedule(schedule) {
+  const rows = schedule.map((st, i) => `
+    <li class="schedule-row" data-stop-index="${i}">
+      <div class="schedule-row__dot" aria-hidden="true"></div>
+      <div class="schedule-row__body">
+        <div class="schedule-row__head">
+          <span class="schedule-row__date">${fmtDateLabel(st)}</span>
+          <span class="schedule-row__city">${st.city}</span>
+        </div>
+        <div class="schedule-row__times">
+          <span class="schedule-row__time" title="Прибытие">
+            <small>Приб.</small> ${fmtTime(st.arrival)}
+          </span>
+          <span class="schedule-row__time schedule-row__time--stop" title="Стоянка">
+            <small>Стоянка</small> ${fmtStop(st.stop)}
+          </span>
+          <span class="schedule-row__time" title="Отправление">
+            <small>Отпр.</small> ${fmtTime(st.departure)}
+          </span>
+        </div>
+      </div>
+    </li>
+  `).join('');
+
+  return `
+    <details class="schedule" open>
+      <summary class="schedule__toggle">
+        <span class="schedule__toggle-title">Расписание маршрута</span>
+        <span class="schedule__toggle-hint" data-role="schedule-status"></span>
+      </summary>
+      <ol class="schedule__list" data-role="schedule-list">
+        ${rows}
+      </ol>
+    </details>
+  `;
+}
+
 /** Рендер одной карточки поездки */
 function renderTripCard(trip) {
+  const schedule = SCHEDULES[trip.id] || [];
+
   return `
     <article class="trip-card" data-trip-id="${trip.id}">
       <h2 class="trip-card__title">${trip.title}</h2>
@@ -141,6 +284,8 @@ function renderTripCard(trip) {
           </div>
         </div>
       </div>
+
+      ${renderSchedule(schedule)}
     </article>
   `;
 }
@@ -156,9 +301,7 @@ function renderCountdown(idPrefix, { days, hours, minutes, seconds }, glow = fal
 
   return `
     <div class="timer-grid" role="timer">
-      ${units
-        .map(
-          ({ key, label, value }) => `
+      ${units.map(({ key, label, value }) => `
         <div class="timer-unit">
           <div
             class="timer-unit__value${glow ? ' is-glow' : ''}"
@@ -167,9 +310,7 @@ function renderCountdown(idPrefix, { days, hours, minutes, seconds }, glow = fal
           >${String(value).padStart(2, '0')}</div>
           <div class="timer-unit__label">${label}</div>
         </div>
-      `
-        )
-        .join('')}
+      `).join('')}
     </div>
   `;
 }
@@ -191,11 +332,48 @@ function updateCountdown(container, idPrefix, duration, glow = false) {
     if (el.textContent !== next) {
       el.textContent = next;
       el.classList.remove('is-flip');
-      void el.offsetWidth; // reflow для перезапуска анимации
+      void el.offsetWidth;
       el.classList.add('is-flip');
     }
     el.classList.toggle('is-glow', glow);
   });
+}
+
+/** Обновляет подсветку станций расписания */
+function updateSchedule(card, trip, now) {
+  const schedule = SCHEDULES[trip.id];
+  if (!schedule) return;
+
+  const states = getScheduleStates(schedule, now);
+  const rows = card.querySelectorAll('[data-stop-index]');
+  const statusEl = card.querySelector('[data-role="schedule-status"]');
+  const phase = getTripPhase(now, trip.departure, trip.arrival);
+
+  let statusText = '';
+
+  rows.forEach((row, i) => {
+    row.classList.remove('is-past', 'is-current', 'is-future', 'is-done');
+    const state = states[i];
+    if (state === 'past') row.classList.add('is-past');
+    else if (state === 'current') {
+      row.classList.add('is-current');
+      statusText = `→ ${schedule[i].city}`;
+    } else if (state === 'done') row.classList.add('is-done');
+    else row.classList.add('is-future');
+  });
+
+  if (statusEl) {
+    if (!statusText) {
+      if (phase === 'before') statusText = 'Ожидание отправления';
+      else if (phase === 'after') statusText = 'Маршрут завершён';
+    }
+    statusEl.textContent = statusText;
+  }
+
+  const currentRow = card.querySelector('.schedule-row.is-current');
+  if (currentRow && card.querySelector('.schedule[open]')) {
+    currentRow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
 }
 
 /** Обновляет одну карточку поездки */
@@ -208,38 +386,30 @@ function updateTripCard(card, trip, now) {
   const fill = card.querySelector('[data-role="progress-fill"]');
   const train = card.querySelector('[data-role="progress-train"]');
   const percentEl = card.querySelector('[data-role="progress-percent"]');
-
   const prefix = trip.id;
 
-  // ── Таймер 1: до выезда ──
   if (phase === 'before') {
-    const remaining = splitDuration(departure - now);
-    updateCountdown(depContainer, `${prefix}-dep`, remaining);
+    updateCountdown(depContainer, `${prefix}-dep`, splitDuration(departure - now));
   } else if (phase === 'transit') {
-    depContainer.innerHTML =
-      '<span class="status-badge status-badge--transit">Поезд уже в пути</span>';
+    depContainer.innerHTML = '<span class="status-badge status-badge--transit">Поезд уже в пути</span>';
   } else {
-    depContainer.innerHTML =
-      '<span class="status-badge status-badge--departed">Поезд уехал</span>';
+    depContainer.innerHTML = '<span class="status-badge status-badge--departed">Поезд уехал</span>';
   }
 
-  // ── Таймер 2: путь осталось ──
   if (phase === 'before') {
-    transitContainer.innerHTML =
-      '<span class="status-badge status-badge--waiting">Ожидание отправления</span>';
+    transitContainer.innerHTML = '<span class="status-badge status-badge--waiting">Ожидание отправления</span>';
   } else if (phase === 'transit') {
-    const remaining = splitDuration(arrival - now);
-    updateCountdown(transitContainer, `${prefix}-transit`, remaining, true);
+    updateCountdown(transitContainer, `${prefix}-transit`, splitDuration(arrival - now), true);
   } else {
-    transitContainer.innerHTML =
-      '<span class="status-badge status-badge--arrived">Прибыли! 🎉</span>';
+    transitContainer.innerHTML = '<span class="status-badge status-badge--arrived">Прибыли! 🎉</span>';
   }
 
-  // ── Прогресс-бар и поезд ──
   const percent = getProgressPercent(now, departure, arrival);
   fill.style.width = `${percent}%`;
   train.style.left = `${percent}%`;
   percentEl.textContent = `${Math.round(percent)}%`;
+
+  updateSchedule(card, trip, now);
 }
 
 /** Инициализация приложения */
@@ -251,7 +421,7 @@ function init() {
   const cardElements = [...cardsRoot.querySelectorAll('.trip-card')];
 
   function tick() {
-    const now = new Date(); // абсолютный момент; сравнение с MSK-датами корректно
+    const now = new Date();
 
     clockEl.textContent = formatMSKClock(now);
     clockEl.setAttribute('datetime', now.toISOString());
